@@ -122,7 +122,7 @@ def evaluate(code, port=None, **kwargs):
                 opts = {'op': 'eval', 'code': '(.printStackTrace *e)', 'session': message['session']}
                 con.write(opts)
                 stacktrace = con.read()
-                stacktrace_status = con.read() if 'value' in result else result
+                stacktrace_status = con.read() if 'value' in message else message
                 raise EvalError(stacktrace['err'])
             elif message['status'][0] == 'need-input':
                 opts = {'op': 'stdin',
@@ -131,7 +131,7 @@ def evaluate(code, port=None, **kwargs):
             else:
                 raise Exception('Eval returned bad exit status: %s' % (message['status'][0]))
         elif 'value' in message:
-            value = message['value']
+            value = message
         elif 'out' in message:
             print(message['out'], end='')
         elif 'err' in message:
@@ -142,7 +142,7 @@ def evaluate(code, port=None, **kwargs):
     
 def repl(port=None):
     # send a dummy form to get the current namespace
-    ns = evaluate('(str (ns-name *ns*))', port)
+    ns = evaluate('nil', port)['ns']
     # start the repl
     while (True):
         try:
@@ -176,7 +176,7 @@ def run(name, *args):
                     (let [c (:exit-code (ex-data e))]
                       (when-not (and (number? c) (zero? c))
                         (print-cause-trace e)))))))""" % (escape(name), escape(*args))
-    return evaluate(code, ns='user')
+    return evaluate(code, ns='user')['value']
 
 def lein(*args):
     cwd = os.getcwd()
@@ -194,18 +194,18 @@ def lein(*args):
                            (let [c (:exit-code (ex-data e))]
                              (when-not (and (number? c) (zero? c))
                                (throw e))))))""" % (escape(cwd if root is None else root), escape(cwd), escape(*args))
-    return evaluate(code, ns='leiningen.core.main')
+    return evaluate(code, ns='leiningen.core.main')['value']
 
 
 # parse command-line arguments
-if len(sys.argv) > 2 and sys.argv[1] == 'eval': print(evaluate(sys.argv[2]))
+if len(sys.argv) > 2 and sys.argv[1] == 'eval': print(evaluate(sys.argv[2])['value'])
 elif len(sys.argv) > 1 and sys.argv[1] == 'start': start(*sys.argv[2:3], quiet=False)
 elif len(sys.argv) > 1 and sys.argv[1] == 'kill': kill(*sys.argv[2:3], quiet=False)
 elif len(sys.argv) > 1 and sys.argv[1] == 'restart': restart(*sys.argv[2:3])
 elif len(sys.argv) > 1 and sys.argv[1] == 'repl': repl(*sys.argv[2:3])
 elif len(sys.argv) > 2 and sys.argv[1] == 'run': run(*sys.argv[2:])
 elif len(sys.argv) > 1 and sys.argv[1] == 'lein': lein(*sys.argv[2:])
-elif not sys.stdin.isatty(): print(evaluate(sys.stdin.read()))
+elif not sys.stdin.isatty(): print(evaluate(sys.stdin.read())['value'])
 else:
     print(__doc__, file=sys.stderr)
     sys.exit(1)
