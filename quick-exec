@@ -1,0 +1,3 @@
+#!/usr/bin/env python
+import os, sys
+os.execvp(os.path.join(os.path.dirname(__file__),'quick'),['lein','exec']+sys.argv[1:])
