@@ -176,7 +176,8 @@ def run(name, *args):
                     (let [c (:exit-code (ex-data e))]
                       (when-not (and (number? c) (zero? c))
                         (print-cause-trace e)))))))""" % (escape(name), escape(*args))
-    return evaluate(code, ns='user')['value']
+    result = evaluate(code, ns='user')
+    return None if result is None else result['value']
 
 def lein(*args):
     cwd = os.getcwd()
@@ -194,7 +195,8 @@ def lein(*args):
                            (let [c (:exit-code (ex-data e))]
                              (when-not (and (number? c) (zero? c))
                                (throw e))))))""" % (escape(cwd if root is None else root), escape(cwd), escape(*args))
-    return evaluate(code, ns='leiningen.core.main')['value']
+    result = evaluate(code, ns='leiningen.core.main')
+    return None if result is None else result['value']
 
 
 # parse command-line arguments
