@@ -37,4 +37,4 @@ setup(name="quick-clojure",
                    'Topic :: Software Development :: Libraries :: Python Modules',
                    'Topic :: Utilities'],
       scripts=['quick','quick-exec','quick-exec-p'],
-      install_requires=['nrepl'])
+      install_requires=['nrepl-python-client'])
