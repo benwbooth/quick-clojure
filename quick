@@ -5,13 +5,13 @@ Quick runs Clojure code quickly.
 
 Commands:
 
-  eval    FORM                             Evals given form.
-  run     NAMESPACE[/FUNCTION] [ARGS...]   Runs existing defn.
-  repl    [PORT]                           Connects a repl to a running nREPL server.
-  lein    [TASK ARGS...]                   Runs a Leiningen task.
-  start   [PORT]                           Start a nREPL server.
-  kill    [PORT]                           Kill a running nREPL server.
-  restart [PORT]                           Restart a running nREPL server.
+  eval          FORM                             Evals given form.
+  repl          [PORT]                           Connects a repl to a running nREPL server.
+  run           NAMESPACE[/FUNCTION] [ARGS...]   Runs existing defn.
+  lein          [TASK ARGS...]                   Runs a Leiningen task.
+  start         [PORT]                           Start a nREPL server.
+  kill          [PORT]                           Kill a running nREPL server.
+  restart       [PORT]                           Restart a running nREPL server.
 
 Running with no arguments will read code from stdin.
 '''
@@ -22,9 +22,11 @@ from future import standard_library
 from future.builtins import *
 from future.utils import native_str
 
-import os, os.path, sys, subprocess, re, readline, warnings
+import os, os.path, sys, subprocess, re, readline, warnings, uuid
 from pprint import pformat
 import nrepl
+
+debug = sys.stderr if 'DEBUG' in os.environ else open(os.devnull, 'wb')
 
 def find_root(cwd=None):
     if cwd is None: cwd = os.getcwd()
@@ -66,10 +68,15 @@ def get_port():
 def start_nrepl(port=None):
     proc = subprocess.Popen(
         ['lein','repl',':headless']+([':port',port] if port is not None else []),
-        stdout=subprocess.PIPE)
+        stdout=subprocess.PIPE, stderr=open(os.devnull,'wb'))
     line = proc.stdout.readline().rstrip()
     if line is not None:
-        port = re.match(r"^nREPL server started on port ([0-9]+) on host ([^ ]+)$", line).group(1)
+        match = re.match(r"^nREPL server started on port ([0-9]+) on host ([^ ]+)$", line)
+        port = None
+        if match is not None:
+            port = match.group(1)
+        else:
+            raise Exception("Could not match lein repl output: "+line)
         if port is not None:
             port = int(port)
             #print(line, file=sys.stderr)
@@ -101,41 +108,64 @@ def restart(port=None):
 
 class EvalError(Exception): pass
 
-def evaluate(code, port=None, **kwargs):
+def read(con):
+    message = con.read()
+    print('\033[91m'+pformat(message)+'\033[0m', file=debug)
+    return message
+
+def write(con, message):
+    con.write(message)
+    print('\033[93m'+pformat(message)+'\033[0m', file=debug)
+
+# TODO: do we need to pass an ID to get out messages after a need-input?
+def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, **kwargs):
     if port is None: port = start()
     url = 'nrepl://localhost:%i' % (port)
     con = nrepl.connect(native_str(url))
-    opts = {'op': 'eval', 'code': code}
+
+    write(con, {'id': 'init', 'op': 'clone'})
+    message = read(con)
+    session = message['new-session']
+    if session is None: raise Exception("No session returned from clone op")
+
+    opts = {'op': 'eval', 'code': code, 'id': 'main', 'session': session}
     opts.update(kwargs)
-    con.write(opts)
+    write(con, opts)
 
     value = None
-    while True:
-        message = con.read()
-        #print(pformat(message), file=sys.stderr)
+    ids = {'main': True}
+    while any(ids):
+        message = read(con);
         if message is None:
+            print('Got None message', file=debug)
             break
+        elif not isinstance(message,dict):
+            warnings.warn('Got non-dict message: '+pformat(message))
         elif 'status' in message and isinstance(message['status'],list) and len(message['status'])>0:
-            if message['status'][0] == 'done':
-                break
+            if message['status'][0] == 'done' and 'id' in message:
+                del ids[message['id']]
             elif message['status'][0] == 'eval-error':
-                opts = {'op': 'eval', 'code': '(.printStackTrace *e)', 'session': message['session']}
-                con.write(opts)
-                stacktrace = con.read()
-                stacktrace_status = con.read() if 'value' in message else message
+                opts = {'op': 'eval', 'code': '(.printStackTrace *e)', 'session': session}
+                write(con, opts)
+                stacktrace = read(con)
+                stacktrace_status = read(con) if 'value' in stacktrace else stacktrace
                 raise EvalError(stacktrace['err'])
             elif message['status'][0] == 'need-input':
+                id = str(uuid.uuid4())
                 opts = {'op': 'stdin',
-                        'stdin': sys.stdin.read(1) if sys.stdin.isatty() else sys.stdin.read()}
-                con.write(opts)
+                        'session': session,
+                        'stdin': sys.stdin.read(1) if sys.stdin.isatty() else sys.stdin.read(),
+                        'id': id}
+                ids[id] = True
+                write(con, opts)
             else:
                 raise Exception('Eval returned bad exit status: %s' % (message['status'][0]))
         elif 'value' in message:
             value = message
         elif 'out' in message:
-            print(message['out'], end='')
+            print(message['out'], end='', file=out)
         elif 'err' in message:
-            print(message['err'], file=sys.stderr, end='')
+            print(message['err'], end='', file=err)
         else: 
             warnings.warn("Don't know how to handle message: %s" % (message))
     return value
@@ -194,10 +224,16 @@ def lein(*args):
                          (catch clojure.lang.ExceptionInfo e
                            (let [c (:exit-code (ex-data e))]
                              (when-not (and (number? c) (zero? c))
-                               (throw e))))))""" % (escape(cwd if root is None else root), escape(cwd), escape(*args))
+                               (throw e))))))""" % (
+                                   escape(cwd if root is None else root),
+                                   escape(cwd),
+                                   escape(*args))
     result = evaluate(code, ns='leiningen.core.main')
     return None if result is None else result['value']
 
+if 'REPLOAD' in os.environ:
+    evaluate("(require 'repload) (require '[repload :refer [repload]]) (repload)",
+             out=open(os.devnull,'wb'))
 
 # parse command-line arguments
 if len(sys.argv) > 2 and sys.argv[1] == 'eval': print(evaluate(sys.argv[2])['value'])

@@ -1,4 +1,5 @@
 #!/usr/bin/env python
 import os, sys
 os.execvp(os.path.join(os.path.dirname(__file__),'quick'),
-          [os.path.join(os.path.dirname(__file__),'quick'),'lein','exec','-p']+sys.argv[1:])
+          [os.path.join(os.path.dirname(__file__),'quick'),
+           'lein','exec','-p']+sys.argv[1:])
