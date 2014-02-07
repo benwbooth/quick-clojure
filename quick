@@ -20,9 +20,9 @@ Running with no arguments will read code from stdin.
 from __future__ import (absolute_import, division, print_function, unicode_literals)
 from future import standard_library
 from future.builtins import *
-from future.utils import native_str
+from future.utils import native_str, native
 
-import os, os.path, sys, subprocess, re, readline, warnings, uuid
+import os, os.path, sys, subprocess, re, readline, warnings, uuid, __builtin__, time
 from pprint import pformat
 import nrepl
 
@@ -75,12 +75,16 @@ def start_nrepl(port=None):
         match = re.match(r"^nREPL server started on port ([0-9]+) on host ([^ ]+)$", line)
         port = None
         if match is not None:
-            port = match.group(1)
+            port = int(match.group(1))
         else:
-            raise Exception("Could not match lein repl output: "+line)
-        if port is not None:
-            port = int(port)
-            #print(line, file=sys.stderr)
+            tries = 0
+            while port is None and tries < 60:
+                port = get_port()
+                if port is None: time.sleep(1) 
+                tries += 1 
+
+        if port is None:
+            raise Exception("Could not determine port of nREPL instance")
     return port
 
 def start(port=None, quiet=True):
@@ -121,7 +125,7 @@ def read(con):
     return message
 
 # TODO: handle exit status
-def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, value_key='value', id='main', **kwargs):
+def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, id='main', **kwargs):
     # connect to the nREPL server
     if port is None: port = start()
     url = 'nrepl://localhost:%i' % (port)
@@ -155,15 +159,10 @@ def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, valu
                 if message['status'][0] == 'done' and 'id' in message:
                     del ids[message['id']]
                 elif message['status'][0] == 'eval-error':
-                    exit_code = evaluate('(:exit-code (ex-data *e))', port=port,
-                                         out=devnull, err=devnull, session=session)
-                    if 'value' in exit_code and exit_code['value'].isdigit():
-                        exit_code_value = int(exit_code['value']) % 256
-                        sys.exit(exit_code_value)
-                    else:
-                        stacktrace = evaluate('(.printStackTrace *e)', port=port,
-                                              out=devnull, err=devnull, session=session, value_key='err')
-                        raise EvalError(stacktrace['err'])
+                    #evaluate('(.printStackTrace *e)',
+                    #         port=port, out=out, err=err, id='pst', session=session)
+                    #raise EvalError(message['root-ex'])
+                    pass
                 elif message['status'][0] == 'need-input':
                     input_id = str(uuid.uuid4())
                     opts = {'op': 'stdin',
@@ -174,7 +173,7 @@ def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, valu
                     write(con, opts)
                 else:
                     raise Exception('Eval returned bad exit status: %s' % (message['status'][0]))
-            elif value_key in message:
+            elif 'value' in message:
                 value = message
             elif 'out' in message:
                 print(message['out'], end='', file=out)
@@ -225,10 +224,10 @@ def run(name, *args):
                   (try ((ns-resolve ns m-sym) %s)
                   (catch Exception e
                     (let [c (:exit-code (ex-data e))]
-                      (when-not (and (number? c) (zero? c))
-                        (print-cause-trace e)))))))""" % (escape(name), escape(*args))
+                      (print-cause-trace e)
+                      (if (number? c) c 0))))))""" % (escape(name), escape(*args))
     result = evaluate(code, ns='user')
-    return None if result is None else result['value']
+    return None if result is None else int(result['value'])
 
 def lein(*args):
     cwd = os.getcwd()
@@ -241,32 +240,35 @@ def lein(*args):
                            (assoc project :eval-in :nrepl) form))
                        (defmethod leiningen.core.eval/eval-in :trampoline
                          [& _] (throw (Exception. "trampoline disabled")))
-                       (try (-main %s)
-                         (catch clojure.lang.ExceptionInfo e
-                           (let [c (:exit-code (ex-data e))]
-                             (when-not (and (number? c) (zero? c))
-                               (throw e))))))""" % (
+                       (try (-main %s))
+                       (catch clojure.lang.ExceptionInfo e
+                         (let [c (:exit-code (ex-data e))]
+                           (if (number? c) c 0))))""" % (
                                    escape(cwd if root is None else root),
                                    escape(cwd),
                                    escape(*args))
     result = evaluate(code, ns='leiningen.core.main')
-    return None if result is None else result['value']
+    return None if result is None else __builtin__.int(result['value']) % 128
 
 if 'REPLOAD' in os.environ:
-    evaluate("(require 'repload) (require '[repload :refer [repload]]) (repload)",
-             out=debug, err=debug)
+    code = """(require 'repload)
+              (require '[repload :refer [repload]])
+              (repload)"""
+    evaluate(code, out=debug, err=debug)
 
 # parse command-line arguments
+exit_code = None
 if len(sys.argv) > 2 and sys.argv[1] == 'eval': print(evaluate(sys.argv[2])['value'])
 elif len(sys.argv) > 1 and sys.argv[1] == 'start': start(*sys.argv[2:3], quiet=False)
 elif len(sys.argv) > 1 and sys.argv[1] == 'kill': kill(*sys.argv[2:3], quiet=False)
 elif len(sys.argv) > 1 and sys.argv[1] == 'restart': restart(*sys.argv[2:3])
 elif len(sys.argv) > 1 and sys.argv[1] == 'repl': repl(*sys.argv[2:3])
-elif len(sys.argv) > 2 and sys.argv[1] == 'run': run(*sys.argv[2:])
-elif len(sys.argv) > 1 and sys.argv[1] == 'lein': lein(*sys.argv[2:])
+elif len(sys.argv) > 2 and sys.argv[1] == 'run': exit_code = run(*sys.argv[2:])
+elif len(sys.argv) > 1 and sys.argv[1] == 'lein': exit_code = lein(*sys.argv[2:])
 elif not sys.stdin.isatty(): print(evaluate(sys.stdin.read())['value'])
 else:
     print(__doc__, file=sys.stderr)
     sys.exit(1)
 
-sys.exit(0)
+print("Exited with status: "+pformat(exit_code), file=debug)
+sys.exit(0 if exit_code is None else exit_code)
