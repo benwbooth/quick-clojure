@@ -159,9 +159,6 @@ def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, id='
                 if message['status'][0] == 'done' and 'id' in message:
                     del ids[message['id']]
                 elif message['status'][0] == 'eval-error':
-                    #evaluate('(.printStackTrace *e)',
-                    #         port=port, out=out, err=err, id='pst', session=session)
-                    #raise EvalError(message['root-ex'])
                     pass
                 elif message['status'][0] == 'need-input':
                     input_id = str(uuid.uuid4())
@@ -191,13 +188,17 @@ def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, id='
     return value
     
 def repl(port=None):
+    readline_config = ['set blink-matching-paren on']
+    for line in readline_config:
+        readline.parse_and_bind(line)
     # send a dummy form to get the current namespace
     ns = evaluate('nil', port)['ns']
     # start the repl
     while (True):
         try:
             line = input('%s=>' % (ns))
-            result = evaluate(line, port)
+            code = """(try %s (catch Exception e (clojure.stacktrace/print-cause-trace e)))""" % (line)
+            result = evaluate(code, port)
             if result is not None:
                 if 'ns' in result:
                     ns = result['ns']
@@ -215,17 +216,15 @@ def escape(*symbols):
     return ' '.join(map(lambda x: '"'+x.replace(r'["\\]',r'\\\1')+'"', symbols))
 
 def run(name, *args):
-    code = """(do
-                (require '[clojure.stacktrace :refer [print-cause-trace]])
-                (let [raw (symbol %s)
+    code = """(let [raw (symbol %s)
                       ns (symbol (or (namespace raw) raw))
                       m-sym (if (namespace raw) (symbol (name raw)) '-main)]
                   (require ns)
                   (try ((ns-resolve ns m-sym) %s)
-                  (catch Exception e
-                    (let [c (:exit-code (ex-data e))]
-                      (print-cause-trace e)
-                      (if (number? c) c 0))))))""" % (escape(name), escape(*args))
+                    (catch Exception e
+                      (let [c (:exit-code (ex-data e))]
+                        (clojure.stacktrace/print-cause-trace e)
+                        (if (number? c) c 0)))))""" % (escape(name), escape(*args))
     result = evaluate(code, ns='user')
     return None if result is None else int(result['value'])
 
