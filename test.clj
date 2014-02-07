@@ -6,3 +6,5 @@
 (println "Hello Again!")
 (println "Hello Again!")
 (println "Press ENTER") (read-line)
+;(leiningen.core.main/exit 2)
+(throw (ex-info "test" {:a 1}))

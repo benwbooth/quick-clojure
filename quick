@@ -26,7 +26,8 @@ import os, os.path, sys, subprocess, re, readline, warnings, uuid
 from pprint import pformat
 import nrepl
 
-debug = sys.stderr if 'DEBUG' in os.environ else open(os.devnull, 'wb')
+devnull = open(os.devnull,'wb')
+debug = sys.stderr if 'DEBUG' in os.environ else devnull
 
 def find_root(cwd=None):
     if cwd is None: cwd = os.getcwd()
@@ -68,7 +69,7 @@ def get_port():
 def start_nrepl(port=None):
     proc = subprocess.Popen(
         ['lein','repl',':headless']+([':port',port] if port is not None else []),
-        stdout=subprocess.PIPE, stderr=open(os.devnull,'wb'))
+        stdout=subprocess.PIPE, stderr=devnull)
     line = proc.stdout.readline().rstrip()
     if line is not None:
         match = re.match(r"^nREPL server started on port ([0-9]+) on host ([^ ]+)$", line)
@@ -119,26 +120,29 @@ def read(con):
     print('\033[91m'+pformat(message)+'\033[0m', file=debug)
     return message
 
-def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, **kwargs):
+# TODO: handle exit status
+def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, value_key='value', id='main', **kwargs):
     # connect to the nREPL server
     if port is None: port = start()
     url = 'nrepl://localhost:%i' % (port)
     con = nrepl.connect(native_str(url))
 
     # get a new session id
-    write(con, {'id': 'init', 'op': 'clone'})
-    message = read(con)
-    session = message['new-session']
-    if session is None: raise Exception("No session returned from clone op")
+    if session is None:
+        write(con, {'id': 'init', 'op': 'clone'})
+        message = read(con)
+        session = message['new-session']
+        if session is None: raise Exception("No session returned from clone op")
 
     # run the eval command on the code
-    opts = {'op': 'eval', 'code': code, 'id': 'main', 'session': session}
+    opts = {'op': 'eval', 'code': code, 'id': id, 'session': session}
     opts.update(kwargs)
     write(con, opts)
 
     # handle any messages sent back until all the task ids are status done
+    exit_code = None
     value = None
-    ids = {'main': True}
+    ids = {id: True}
     while any(ids):
         try:
             message = read(con);
@@ -151,22 +155,26 @@ def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, **kwargs):
                 if message['status'][0] == 'done' and 'id' in message:
                     del ids[message['id']]
                 elif message['status'][0] == 'eval-error':
-                    opts = {'op': 'eval', 'code': '(.printStackTrace *e)', 'session': session}
-                    write(con, opts)
-                    stacktrace = read(con)
-                    stacktrace_status = read(con) if 'value' in stacktrace else stacktrace
-                    raise EvalError(stacktrace['err'])
+                    exit_code = evaluate('(:exit-code (ex-data *e))', port=port,
+                                         out=devnull, err=devnull, session=session)
+                    if 'value' in exit_code and exit_code['value'].isdigit():
+                        exit_code_value = int(exit_code['value']) % 256
+                        sys.exit(exit_code_value)
+                    else:
+                        stacktrace = evaluate('(.printStackTrace *e)', port=port,
+                                              out=devnull, err=devnull, session=session, value_key='err')
+                        raise EvalError(stacktrace['err'])
                 elif message['status'][0] == 'need-input':
-                    id = str(uuid.uuid4())
+                    input_id = str(uuid.uuid4())
                     opts = {'op': 'stdin',
                             'session': session,
                             'stdin': sys.stdin.read(1) if sys.stdin.isatty() else sys.stdin.read(),
-                            'id': id}
-                    ids[id] = True
+                            'id': input_id}
+                    ids[input_id] = True
                     write(con, opts)
                 else:
                     raise Exception('Eval returned bad exit status: %s' % (message['status'][0]))
-            elif 'value' in message:
+            elif value_key in message:
                 value = message
             elif 'out' in message:
                 print(message['out'], end='', file=out)
@@ -181,7 +189,6 @@ def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, **kwargs):
                         'interrupt-id': current_id,
                         'id': 'interrupt-'+str(uuid.uuid4())}
                 write(con, opts)
-            
     return value
     
 def repl(port=None):
@@ -247,7 +254,7 @@ def lein(*args):
 
 if 'REPLOAD' in os.environ:
     evaluate("(require 'repload) (require '[repload :refer [repload]]) (repload)",
-             out=open(os.devnull,'wb'))
+             out=debug, err=debug)
 
 # parse command-line arguments
 if len(sys.argv) > 2 and sys.argv[1] == 'eval': print(evaluate(sys.argv[2])['value'])
