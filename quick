@@ -108,66 +108,80 @@ def restart(port=None):
 
 class EvalError(Exception): pass
 
+current_id = None
+def write(con, message):
+    if 'id' in message: current_id = message['id']
+    con.write(message)
+    print('\033[93m'+pformat(message)+'\033[0m', file=debug)
+
 def read(con):
     message = con.read()
     print('\033[91m'+pformat(message)+'\033[0m', file=debug)
     return message
 
-def write(con, message):
-    con.write(message)
-    print('\033[93m'+pformat(message)+'\033[0m', file=debug)
-
-# TODO: do we need to pass an ID to get out messages after a need-input?
 def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, **kwargs):
+    # connect to the nREPL server
     if port is None: port = start()
     url = 'nrepl://localhost:%i' % (port)
     con = nrepl.connect(native_str(url))
 
+    # get a new session id
     write(con, {'id': 'init', 'op': 'clone'})
     message = read(con)
     session = message['new-session']
     if session is None: raise Exception("No session returned from clone op")
 
+    # run the eval command on the code
     opts = {'op': 'eval', 'code': code, 'id': 'main', 'session': session}
     opts.update(kwargs)
     write(con, opts)
 
+    # handle any messages sent back until all the task ids are status done
     value = None
     ids = {'main': True}
     while any(ids):
-        message = read(con);
-        if message is None:
-            print('Got None message', file=debug)
-            break
-        elif not isinstance(message,dict):
-            warnings.warn('Got non-dict message: '+pformat(message))
-        elif 'status' in message and isinstance(message['status'],list) and len(message['status'])>0:
-            if message['status'][0] == 'done' and 'id' in message:
-                del ids[message['id']]
-            elif message['status'][0] == 'eval-error':
-                opts = {'op': 'eval', 'code': '(.printStackTrace *e)', 'session': session}
-                write(con, opts)
-                stacktrace = read(con)
-                stacktrace_status = read(con) if 'value' in stacktrace else stacktrace
-                raise EvalError(stacktrace['err'])
-            elif message['status'][0] == 'need-input':
-                id = str(uuid.uuid4())
-                opts = {'op': 'stdin',
+        try:
+            message = read(con);
+            if message is None:
+                print('Got None message', file=debug)
+                break
+            elif not isinstance(message,dict):
+                warnings.warn('Got non-dict message: '+pformat(message))
+            elif 'status' in message and isinstance(message['status'],list) and len(message['status'])>0:
+                if message['status'][0] == 'done' and 'id' in message:
+                    del ids[message['id']]
+                elif message['status'][0] == 'eval-error':
+                    opts = {'op': 'eval', 'code': '(.printStackTrace *e)', 'session': session}
+                    write(con, opts)
+                    stacktrace = read(con)
+                    stacktrace_status = read(con) if 'value' in stacktrace else stacktrace
+                    raise EvalError(stacktrace['err'])
+                elif message['status'][0] == 'need-input':
+                    id = str(uuid.uuid4())
+                    opts = {'op': 'stdin',
+                            'session': session,
+                            'stdin': sys.stdin.read(1) if sys.stdin.isatty() else sys.stdin.read(),
+                            'id': id}
+                    ids[id] = True
+                    write(con, opts)
+                else:
+                    raise Exception('Eval returned bad exit status: %s' % (message['status'][0]))
+            elif 'value' in message:
+                value = message
+            elif 'out' in message:
+                print(message['out'], end='', file=out)
+            elif 'err' in message:
+                print(message['err'], end='', file=err)
+            else: 
+                warnings.warn("Don't know how to handle message: %s" % (message))
+        except KeyboardInterrupt:
+            if current_id is not None:
+                opts = {'op': 'interrupt',
                         'session': session,
-                        'stdin': sys.stdin.read(1) if sys.stdin.isatty() else sys.stdin.read(),
-                        'id': id}
-                ids[id] = True
+                        'interrupt-id': current_id,
+                        'id': 'interrupt-'+str(uuid.uuid4())}
                 write(con, opts)
-            else:
-                raise Exception('Eval returned bad exit status: %s' % (message['status'][0]))
-        elif 'value' in message:
-            value = message
-        elif 'out' in message:
-            print(message['out'], end='', file=out)
-        elif 'err' in message:
-            print(message['err'], end='', file=err)
-        else: 
-            warnings.warn("Don't know how to handle message: %s" % (message))
+            
     return value
     
 def repl(port=None):
