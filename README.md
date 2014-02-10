@@ -27,6 +27,13 @@ Commands:
 Running with no arguments will read code from stdin.
 ```
 
+Tips
+======
+
+[Repload](https://github.com/john2x/repload) Integration: You can force the server to run ```(repload)``` before each command by setting the ```REPLOAD``` environment variable. This should automatically reload any user-defined symbols. It should be useful if you're writing and testing development code.
+
+You can set the ```DEBUG``` environment variable to debug nREPL message. The orange ones are client -> server messages, the red ones are server -> client messages.
+
 Caveats
 =========
 
