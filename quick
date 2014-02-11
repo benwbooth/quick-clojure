@@ -127,6 +127,12 @@ def read(con):
     print('\033[91m'+pformat(message)+'\033[0m', file=debug)
     return message
 
+def load_repload(port=None, con=None, session=None, id='main'):
+    code = """(require 'repload)
+              (require '[repload :refer [repload]])
+              (repload)"""
+    evaluate(code, port=port, con=con, session=session, out=debug, err=debug)
+
 # TODO: handle exit status
 def evaluate(code, port=None, con=None, out=sys.stdout, err=sys.stderr,
              session=None, id='main', toplevel=None, **kwargs):
@@ -142,6 +148,7 @@ def evaluate(code, port=None, con=None, out=sys.stdout, err=sys.stderr,
         message = read(con)
         session = message['new-session']
         if session is None: raise Exception("No session returned from clone op")
+        if 'REPLOAD' in os.environ: load_repload(port=port, con=con, session=session, id=id)
 
     # run the eval command on the code
     opts = {'op': 'eval', 'code': code, 'id': id, 'session': session}
@@ -207,6 +214,7 @@ def repl(port=None, con=None):
     message = read(con);
     session = message['new-session']
     if session is None: raise Exception("No session returned from clone op")
+    if 'REPLOAD' in os.environ: load_repload(port=port, con=con, session=session, id=id)
 
     # get the default namespace
     ns = evaluate('nil', port=port, con=con, session=session)['ns']
@@ -282,5 +290,6 @@ else:
     print(__doc__, file=sys.stderr)
     sys.exit(1)
 
+exit_code = 0 if exit_code is None else exit_code
 print("Exited with status: "+pformat(exit_code), file=debug)
-sys.exit(0 if exit_code is None else exit_code)
+sys.exit(exit_code)
