@@ -37,7 +37,7 @@ def find_root(cwd=None):
         cwd = os.path.dirname(cwd)
     return None
 
-def get_port():
+def get_port(toplevel=None):
     ''' Figure out what port the nREPL server is set to. '''
     # check to see if LEIN_REPL_PORT is set.
     if os.environ.get('LEIN_REPL_PORT') is not None and os.environ.get('LEIN_REPL_PORT').isdigit():
@@ -46,56 +46,59 @@ def get_port():
     # look for first project.clj in current directory and all parent directories to
     # find the project directory. Check to see if a .nrepl-port file exists in the
     # project directory.
-    root = find_root()
-    if root is not None:
-        nrepl_port = os.path.join(root, '.nrepl-port')
-        if os.path.isfile(nrepl_port):
-            with open(nrepl_port) as file:
+    if toplevel is None or toplevel == False:
+        root = find_root()
+        if root is not None:
+            nrepl_port = os.path.join(root, '.nrepl-port')
+            if os.path.isfile(nrepl_port):
+                with open(nrepl_port) as file:
+                    port = file.read()
+                    if port is not None and port.isdigit():
+                        return int(port)
+            else:
+                return None
+
+    # Check to see if ~/.lein/repl-port file exists.
+    if toplevel is None or toplevel == True:
+        repl_port = os.path.expanduser('~/.lein/repl-port')
+        if os.path.isfile(repl_port):
+            with open(repl_port) as file:
                 port = file.read()
                 if port is not None and port.isdigit():
                     return int(port)
-
-    # Check to see if ~/.lein/repl-port file exists.
-    repl_port = os.path.expanduser('~/.lein/repl-port')
-    if os.path.isfile(repl_port):
-        with open(repl_port) as file:
-            port = file.read()
-            if port is not None and port.isdigit():
-                return int(port)
     # no running port number could be found
     return None
 
 # TODO: fix race condition
-def start_nrepl(port=None):
+def start_nrepl(port=None, toplevel=False):
+    cwd = {'cwd': os.path.expanduser('~')} if toplevel else {}
     proc = subprocess.Popen(
         ['lein','repl',':headless']+([':port',port] if port is not None else []),
-        stdout=subprocess.PIPE, stderr=devnull)
-    line = proc.stdout.readline().rstrip()
-    if line is not None:
-        match = re.match(r"^nREPL server started on port ([0-9]+) on host ([^ ]+)$", line)
-        port = None
+        stdout=subprocess.PIPE, stderr=devnull, stdin=devnull, **cwd)
+
+    line = proc.stdout.readline()
+    port = None
+    while port is None and line is not None:
+        print(line, end='', file=sys.stderr)
+        match = re.match(r"^nREPL server started on port ([0-9]+) on host ([^ ]+)$", line.rstrip())
         if match is not None:
             port = int(match.group(1))
-        else:
-            tries = 0
-            while port is None and tries < 60:
-                port = get_port()
-                if port is None: time.sleep(1) 
-                tries += 1 
+            break
+        line = proc.stdout.readline()
 
-        if port is None:
-            raise Exception("Could not determine port of nREPL instance")
+    if port is None:
+        raise Exception("Could not determine port of nREPL instance")
     return port
 
-def start(port=None, quiet=True):
-    running_port = get_port()
+def start(port=None, quiet=True, toplevel=None):
+    running_port = get_port(toplevel=toplevel)
     if running_port:
         if not quiet:
             print('nREPL server is already running on port %s' % (running_port), file=sys.stderr)
         return running_port
     # if no port could be found, spawn a "lein repl :headless" as a background
     # process, then read the port number from stdout.
-    return start_nrepl(port)
+    return start_nrepl(port=port, toplevel=toplevel)
 
 def kill(port=None, quiet=True):
     running_port = get_port()
@@ -125,11 +128,13 @@ def read(con):
     return message
 
 # TODO: handle exit status
-def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, id='main', **kwargs):
+def evaluate(code, port=None, con=None, out=sys.stdout, err=sys.stderr,
+             session=None, id='main', toplevel=None, **kwargs):
     # connect to the nREPL server
-    if port is None: port = start()
-    url = 'nrepl://localhost:%i' % (port)
-    con = nrepl.connect(native_str(url))
+    if port is None: port = start(toplevel=toplevel)
+    if con is None:
+        url = 'nrepl://localhost:%i' % (port)
+        con = nrepl.connect(native_str(url))
 
     # get a new session id
     if session is None:
@@ -144,7 +149,6 @@ def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, id='
     write(con, opts)
 
     # handle any messages sent back until all the task ids are status done
-    exit_code = None
     value = None
     ids = {id: True}
     while any(ids):
@@ -187,18 +191,33 @@ def evaluate(code, port=None, out=sys.stdout, err=sys.stderr, session=None, id='
                 write(con, opts)
     return value
     
-def repl(port=None):
+def repl(port=None, con=None):
     readline_config = ['set blink-matching-paren on']
     for line in readline_config:
         readline.parse_and_bind(line)
+
+    # get a connection
+    if port is None: port = start()
+    if con is None:
+        url = 'nrepl://localhost:%i' % (port)
+        con = nrepl.connect(native_str(url))
+    
+    # get a session
+    write(con, {'id': 'init', 'op': 'clone'})
+    message = read(con);
+    session = message['new-session']
+    if session is None: raise Exception("No session returned from clone op")
+
+    # get the default namespace
+    ns = evaluate('nil', port=port, con=con, session=session)['ns']
+
     # send a dummy form to get the current namespace
-    ns = evaluate('nil', port)['ns']
     # start the repl
     while (True):
         try:
             line = input('%s=>' % (ns))
             code = """(try %s (catch Exception e (clojure.stacktrace/print-cause-trace e)))""" % (line)
-            result = evaluate(code, port)
+            result = evaluate(code, port=port, con=con, session=session)
             if result is not None:
                 if 'ns' in result:
                     ns = result['ns']
@@ -246,14 +265,8 @@ def lein(*args):
                                    escape(cwd if root is None else root),
                                    escape(cwd),
                                    escape(*args))
-    result = evaluate(code, ns='leiningen.core.main')
-    return None if result is None else __builtin__.int(result['value']) % 128
-
-if 'REPLOAD' in os.environ:
-    code = """(require 'repload)
-              (require '[repload :refer [repload]])
-              (repload)"""
-    evaluate(code, out=debug, err=debug)
+    result = evaluate(code, ns='leiningen.core.main', toplevel=True)
+    return None if result is None or result['value'] == 'nil' else __builtin__.int(result['value']) % 128
 
 # parse command-line arguments
 exit_code = None
