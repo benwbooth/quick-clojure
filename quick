@@ -26,7 +26,7 @@ import os, os.path, sys, subprocess, re, readline, warnings, uuid, __builtin__, 
 from pprint import pformat
 import nrepl
 
-devnull = open(os.devnull,'wb')
+devnull = open(os.devnull,'w')
 debug = sys.stderr if 'DEBUG' in os.environ else devnull
 
 def find_root(cwd=None):
