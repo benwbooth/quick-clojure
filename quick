@@ -80,7 +80,7 @@ def start_nrepl(port=None, toplevel=False):
     port = None
     while port is None and line is not None:
         print(line, end='', file=sys.stderr)
-        match = re.match(r"port ([0-9]+)", line.rstrip())
+        match = re.match(r"^.*port ([0-9]+).*$", line.rstrip())
         if match is not None:
             port = int(match.group(1))
             break
